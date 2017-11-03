@@ -840,7 +840,7 @@ void *FtpStart(int fd){
     int len;
     InitTime();
     printf("accept ok\n");
-    SendMessage("220 ftp.ssast.org FTP server ready\r\n", server.conn_fd);
+    SendMessage("220 anonymous FTP server ready\r\n", server.conn_fd);
     len = ReceiveMessage(sentence, server.conn_fd);
     while (len > 0){
         Split(sentence, server.order, server.info, ' ');

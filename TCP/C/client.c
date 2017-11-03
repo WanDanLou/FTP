@@ -11,6 +11,10 @@
 #include <time.h>
 #include <sys/time.h>
 #include <ifaddrs.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <grp.h>
+#include <pwd.h>
 
 #define SERVER_PORT 21
 #define MAXBUF 4096
@@ -184,6 +188,7 @@ int Init(){
     client.conn_port = SERVER_PORT;
     getcwd(client.now_filepath, MAXBUF);
     strcpy(client.conn_ip, "127.0.0.1");
+    return 0;
 }
 
 // 0 failed 1 ok
@@ -457,7 +462,7 @@ int CheckQUIT(){
 int CheckRANAME(){
     if(!strcmp(client.order, "RANAME") || !strcmp(client.order, "rename")){
         char tmp1[500], tmp2[500];
-        int flag = Split(client.info, tmp1, tmp2, ' ');
+        Split(client.info, tmp1, tmp2, ' ');
         if(tmp1[0] == '\0' || tmp2[0] == '\0'){
             printf("please input: rename oldname newname\r\n");
             return client.flag = 1;
@@ -543,8 +548,11 @@ int CheckRETR(){
         }
         char file_buffer[MAXBUF];
         int len_buffer = MAXBUF;
+        int byte_count = 0;
         bzero(file_buffer, len_buffer);
         int file_buffer_len = 0;
+        clock_t st, ed;
+        st = clock();
         while(1){
             file_buffer_len = recv(client.data_fd, file_buffer, MAXBUF, 0);
             if(file_buffer_len == 0)break;
@@ -567,12 +575,16 @@ int CheckRETR(){
                 printf("%s", client.sentence);
                 return client.flag = 1;
             }
+            byte_count += file_buffer_len;
             bzero(file_buffer, MAXBUF);
         }
         fclose(fp);
         CloseAllfd();
         if(ReceiveMessage(client.sentence, client.conn_fd)<=0)return -1;
         printf("%s", client.sentence);
+        ed = clock();
+        double t = (double)(ed-st)/CLOCKS_PER_SEC;
+        if(CheckStart(client.sentence, ""))printf("transport time is %lfs and speed is %lfmb/s.\r\n", t, (double)byte_count/1000/1000/t);
         return client.flag = 1;
     }
     return 0;
@@ -642,6 +654,7 @@ int CheckSTOR(){
             }
             client.data_fd = AccpetOutsider(client.listen_data_fd);
         }
+        int byte_count = 0;
         if(client.data_fd < 0){
             CloseAllfd();
             fclose(fp);
@@ -652,7 +665,8 @@ int CheckSTOR(){
         int len_buffer = MAXBUF;
         bzero(file_buffer, len_buffer);
         int file_buffer_len = 0;
-        int byte_count = 0;
+        clock_t st, ed;
+        st = clock();
         while((file_buffer_len = fread(file_buffer, sizeof(char), MAXBUF, fp))>0){
             if(send(client.data_fd, file_buffer, file_buffer_len, 0)<0){
                 SendMessage("send file broken\r\n", client.conn_fd);
@@ -668,6 +682,9 @@ int CheckSTOR(){
         CloseAllfd();
         if(ReceiveMessage(client.sentence, client.conn_fd)<=0)return -1;
         printf("%s", client.sentence);
+        ed = clock();
+        double t = (double)(ed-st)/CLOCKS_PER_SEC;
+        if(CheckStart(client.sentence, ""))printf("transport time is %lfs and speed is %lfmb/s.\r\n", t, (double)byte_count/1000/1000/t);
         return client.flag = 1;
     }
     return 0;
@@ -684,7 +701,175 @@ int CheckUSER(){
     }
     return 0;
 }
+int CheckCCWD(){
+    char sentence[MAXBUF];
+    if(!strcmp(client.order, "CCWD")||!strcmp(client.order, "ccd")||!strcmp(client.order, "lcd")){
+        if(client.info[0] == '\0'){
+            if(chdir(client.now_filepath) < 0){
+                printf("local:change local filepath error.\r\n");
+            }
+            else{
+                getcwd(client.now_filepath, MAXBUF);
+                printf("local:change local filepath to:%s.\r\n", sentence);
+            }
+        }
+        else{
+            if(chdir(client.info) < 0){
+                printf("local:change local filepath error.\r\n");
+            }
+            else{
+                getcwd(sentence, MAXBUF);
+                printf("local:filepath:%s.\r\n", sentence);
+            }
+        }
+        client.flag = 1;
+        return 1;
+    }
+    return 0;
+}
+int CheckCPWD(){
+    char sentence[MAXBUF];
+    if(!strcmp(client.order, "CPWD")||!strcmp(client.order, "cpwd")){
+        getcwd(sentence, MAXBUF);
+        printf("local:filepath:%s.\r\n", sentence);
+        client.flag = 1;
+        return 1;
+    }
+    return 0;
+}
+int CheckCDELE(){
+    if(!strcmp(client.order, "CDELE")||!strcmp(client.order, "cdelete")){
+        if(remove(client.info) < 0){
+            printf("local:remove error.\r\n");
+        }
+        else{
+            printf("local:remove ok.\r\n");
+        }
+        client.flag = 1;
+        return 1;
+    }
+    return 0;
+}
+int CheckCMKD(){
+    if(!strcmp(client.order, "CMKD")||!strcmp(client.order, "cmkdir")){
+        if(mkdir(client.info, 0775) < 0){
+            printf("local:mkdir error.\r\n");
+        }
+        else{
+            printf("local:mkdir ok.\r\n");
+        }
+        client.flag = 1;
+        return 1;
+    }
+    return 0;
+}
+void ListFile(struct stat *buf, char *file_name) {
+    //http://blog.csdn.net/wqx521/article/details/50755469
+    char tmp[MAXBUF] = {"----------"};
+    char ans[MAXBUF];
+    switch(buf->st_mode & S_IFMT)//按位&获取文件基本属性
+    {
+        case S_IFIFO:
+            tmp[0] = 'f';
+            break;
+        case S_IFDIR:
+            tmp[0] = 'd';
+            break;
+        case S_IFSOCK:
+            tmp[0] = 's';
+            break;
+        case S_IFBLK:
+            tmp[0] = 'b';
+            break;
+        case S_IFLNK:
+            tmp[0] = 'l';
+            break;
+    }
 
+    if(buf->st_mode & S_IRUSR )tmp[1] = 'r';
+    if(buf->st_mode & S_IWUSR )tmp[2] = 'w';
+    if(buf->st_mode & S_IXUSR )tmp[3] = 'x';
+    if(buf->st_mode & S_IRGRP )tmp[4] = 'r';
+    if(buf->st_mode & S_IWGRP )tmp[5] = 'w';
+    if(buf->st_mode & S_IXGRP )tmp[6] = 'x';
+    if(buf->st_mode & S_IROTH )tmp[7] = 'r';
+    if(buf->st_mode & S_IWOTH )tmp[8] = 'w';
+    if(buf->st_mode & S_IXOTH )tmp[9] = 'x';
+    tmp[10] = '\0';
+    ans[0] = '\0';
+    strcpy(ans, tmp);
+    sprintf(tmp, "\t%d", (int)buf->st_nlink); //打印链接数
+    strcat(ans, tmp);
+    struct passwd *ptr;
+    struct group *str;
+    ptr = getpwuid(buf->st_uid);
+    str = getgrgid(buf->st_gid);
+    sprintf(tmp, "\t%s\t%s", ptr ->pw_name, str -> gr_name);
+    strcat(ans, tmp);
+    sprintf(tmp, "\t%ld", buf->st_size);
+    strcat(ans, tmp);
+    sprintf(tmp, "\t%.12s ", 4 + ctime(&buf->st_mtime));
+    strcat(ans, tmp);
+    sprintf(tmp, "\t%s\r\n", file_name); //打印文件名
+    strcat(ans, tmp);
+    printf("%s", ans);
+//    int len = strlen(ansline);
+//    ansline[len++]='\r';
+//    ansline[len++]='\n';
+//    ansline[len]='\0';
+}
+// -1 failed 0 ok
+int List(char *file_name){
+    char tmp[MAXBUF], ans[MAXBUF];
+    int flag = 0;
+    struct stat buf;
+    struct dirent* fp;
+    DIR* dirfd;
+    if(stat(file_name, &buf) < -1)return -1;
+    if(S_ISREG(buf.st_mode)){
+        for(flag = strlen(file_name); flag >= 0; flag--){
+            if(file_name[flag] == '/')break;
+        }
+        strcpy(tmp, file_name+flag+1);
+        ListFile(&buf, tmp);
+        return 0;
+    }
+    else if(S_ISDIR(buf.st_mode)){
+        dirfd = opendir(file_name);
+        while((fp = readdir(dirfd)) != NULL){
+            if(!strcmp(fp -> d_name, "."))continue;
+            if(!strcmp(fp -> d_name, ".."))continue;
+            sprintf(tmp, "%s/%s", file_name, fp->d_name);
+            if(stat(tmp, &buf) < -1)return -1;
+            ListFile(&buf, fp->d_name);
+        }
+        if(ans[0] == '\0'){
+            strcpy(ans, "There is nothing in dir\r\n");
+        }
+        closedir(dirfd);
+        return 0;
+    }
+    else{
+        return -1;
+    }
+}
+int CheckCLIST(){
+    if(!strcmp(client.order, "CLIST")||!strcmp(client.order, "cls")||!strcmp(client.order, "clist")){
+        if(chdir(".") < 0)printf("local:list error.\r\n");
+        else{
+            getcwd(client.info, MAXBUF);
+            if(List(client.info)<0){
+                printf("local:list error.\r\n");
+            }
+            else{
+                printf("local:list error.\r\n");
+            }
+            client.flag = 1;
+            return 1;
+        }
+    }
+    return 0;
+}
 int Login(){
     char sentence[MAXBUF], info[MAXBUF];
     if(ReceiveMessage(sentence, client.conn_fd)<=0)return -1;
@@ -711,12 +896,23 @@ int Login(){
         printf("%s", sentence);
         if(CheckStart(sentence, "230"))break;
     }while(1);
+    SendMessage("SYST", client.conn_fd);
+    if(ReceiveMessage(sentence, client.conn_fd)<=0)return -1;
+    printf("%s", sentence);
+    SendMessage("TYPE I", client.conn_fd);
+    if(ReceiveMessage(sentence, client.conn_fd)<=0)return -1;
+    printf("%s", sentence);
     return 0;
 }
 int main(int argc, char **argv) {
     Init();
     if(argc > 2){
-        if(CheckIP(argv[1]))strcpy(client.conn_ip, argv[1]);
+        if(CheckIP(argv[1])){
+            strcpy(client.conn_ip, argv[1]);
+        }
+        else{
+            printf("unvalid ip\n");
+        }
     }
     if(argc > 3){
         int base = 0, len = strlen(argv[2]);
@@ -727,7 +923,12 @@ int main(int argc, char **argv) {
             }
             base = base * 10  + argv[2][j] - '0';
         }
-        if(base > 0)client.conn_port = base;
+        if(base > 0){
+            client.conn_port = base;
+        }
+        else{
+            printf("unvalid port\n");
+        }
     }
     client.conn_fd = ConnectOutsider(client.conn_ip, client.conn_port);
     if(client.conn_fd < 0)return 0;
@@ -754,6 +955,11 @@ int main(int argc, char **argv) {
         if(CheckRMD() < 0)break;
         if(CheckSTOR() < 0)break;
         if(CheckUSER() < 0)break;
+        if(CheckCCWD() < 0)break;
+        if(CheckCPWD() < 0)break;
+        if(CheckCMKD() < 0)break;
+        if(CheckCDELE() < 0)break;
+        if(CheckCLIST() < 0)break;
         if(!client.flag){
             SendMessage(sentence, client.conn_fd);
             if(ReceiveMessage(sentence, client.conn_fd)<=0)break;
