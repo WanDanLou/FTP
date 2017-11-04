@@ -17,6 +17,7 @@
 #include <pwd.h>
 
 #define SERVER_PORT 21
+#define DEFAULT_IP "127.0.0.1"
 #define MAXBUF 4096
 #define PASVMODE 1
 #define PORTMODE 0
@@ -147,37 +148,40 @@ void GetInput(char *message){
     message[len] = '\0';
 }
 
-//void GetLocalIp(int sock, int *ip)
-//{
-//    socklen_t addr_size = sizeof(struct sockaddr_in);
-//    struct sockaddr_in addr;
-//    getsockname(sock, (struct sockaddr *)&addr, &addr_size);
-//    int host,i;
-//    host = (addr.sin_addr.s_addr);
-//    for(i=0; i<4; i++){
-//        ip[i] = (host>>i*8)&0xff + '0';
+void GetLocalIp(int sock, char *ip)
+{
+    ip[0]='0';
+    socklen_t addr_size = sizeof(struct sockaddr_in);
+    struct sockaddr_in addr;
+    getsockname(sock, (struct sockaddr *)&addr, &addr_size);
+    int host, base[5];
+    host = (addr.sin_addr.s_addr);
+    for(int i=0; i<4; i++){
+        base[i] = (host>>i*8)&0xff;
+    };
+    sprintf(ip, "%d.%d.%d.%d", base[0], base[1], base[2], base[3]);
+}
+
+//void GetLocalIp(char *ip){
+//    //http://blog.csdn.net/langeldep/article/details/8306603
+//    struct ifaddrs * ifAddrStruct=NULL;
+//    void * tmpAddrPtr=NULL;
+//
+//    getifaddrs(&ifAddrStruct);
+//
+//    while (ifAddrStruct!=NULL)
+//    {
+//        if (ifAddrStruct->ifa_addr->sa_family==AF_INET)
+//        {   // check it is IP4
+//            // is a valid IP4 Address
+//            tmpAddrPtr = &((struct sockaddr_in *)ifAddrStruct->ifa_addr)->sin_addr;
+//            char addressBuffer[INET_ADDRSTRLEN];
+//            inet_ntop(AF_INET, tmpAddrPtr, addressBuffer, INET_ADDRSTRLEN);
+//            strcpy(ip,addressBuffer);
+//        }
+//        ifAddrStruct = ifAddrStruct->ifa_next;
 //    }
 //}
-void GetLocalIp(char *ip){
-    //http://blog.csdn.net/langeldep/article/details/8306603
-    struct ifaddrs * ifAddrStruct=NULL;
-    void * tmpAddrPtr=NULL;
-
-    getifaddrs(&ifAddrStruct);
-
-    while (ifAddrStruct!=NULL)
-    {
-        if (ifAddrStruct->ifa_addr->sa_family==AF_INET)
-        {   // check it is IP4
-            // is a valid IP4 Address
-            tmpAddrPtr = &((struct sockaddr_in *)ifAddrStruct->ifa_addr)->sin_addr;
-            char addressBuffer[INET_ADDRSTRLEN];
-            inet_ntop(AF_INET, tmpAddrPtr, addressBuffer, INET_ADDRSTRLEN);
-            strcpy(ip,addressBuffer);
-        }
-        ifAddrStruct = ifAddrStruct->ifa_next;
-    }
-}
 
 int Init(){
     srand(time(NULL));
@@ -187,18 +191,19 @@ int Init(){
     client.mode = PORTMODE;
     client.conn_port = SERVER_PORT;
     getcwd(client.now_filepath, MAXBUF);
-    strcpy(client.conn_ip, "127.0.0.1");
+    strcpy(client.conn_ip, DEFAULT_IP);
     return 0;
 }
 
 // 0 failed 1 ok
 int CheckIP(char *ip){
     int len = strlen(ip);
-    int ip_num = 0;
+    int ip_num = 0, comma_num = 0;
     ip[len++] = '.';
     ip[len] = '\0';
     for(int p = 0; p < len; p++){
         if(ip[p] == '.'){
+            comma_num++;
             if(ip_num > 255 || ip_num < 0){
                 return 0;
             }
@@ -211,6 +216,7 @@ int CheckIP(char *ip){
             ip_num = ip_num * 10 + (ip[p] - '0');
         }
     }
+    if(comma_num != 4)return 0;
     len--;
     ip[len] = '\0';
     return 1;
@@ -332,13 +338,14 @@ int CheckLIST(){
                 if(client.info[0] == '\0')strcpy(client.sentence, "LIST\r\n");
                 else sprintf(client.sentence, "LIST %s\r\n", client.info);
                 SendMessage(client.sentence, client.conn_fd);
+                CloseAllfd();
+                client.data_fd = ConnectOutsider(client.conn_ip, client.data_port);
                 if(ReceiveMessage(client.sentence, client.conn_fd)<=0)return -1;
                 printf("%s", client.sentence);
                 if(!CheckStart(client.sentence, "150")){
+                    CloseAllfd();
                     return client.flag = 1;
                 }
-                CloseAllfd();
-                client.data_fd = ConnectOutsider(client.conn_ip, client.data_port);
             }
         }
         else {
@@ -355,25 +362,30 @@ int CheckLIST(){
             if(client.info[0] == '\0')strcpy(client.sentence, "LIST\r\n");
             else sprintf(client.sentence, "LIST %s\r\n", client.info);
             SendMessage(client.sentence, client.conn_fd);
+            client.data_fd = AccpetOutsider(client.listen_data_fd);
             if(ReceiveMessage(client.sentence, client.conn_fd)<=0)return -1;
             printf("%s", client.sentence);
             if(!CheckStart(client.sentence, "150")){
                 CloseAllfd();
                 return client.flag = 1;
             }
-            client.data_fd = AccpetOutsider(client.listen_data_fd);
         }
         if(client.data_fd < 0){
             printf("Connection refued\r\n");
             CloseAllfd();
             return client.flag = 1;
         }
-        if(ReceiveMessage(client.sentence, client.data_fd)<=0){
-            printf("Connection broken\r\n");
-            CloseAllfd();
-            return client.flag = 1;
+        int len;
+        while (1){
+            len = ReceiveMessage(client.sentence, client.data_fd);
+            if(len == 0)break;
+            if(len < 0){
+                printf("Connection broken\r\n");
+                CloseAllfd();
+                return client.flag = 1;
+            }
+            printf("%s", client.sentence);
         }
-        printf("%s", client.sentence);
         CloseAllfd();
         if(ReceiveMessage(client.sentence, client.conn_fd)<=0)return -1;
         printf("%s", client.sentence);
@@ -502,13 +514,14 @@ int CheckRETR(){
                 if (client.info[0] == '\0')strcpy(client.sentence, "RETR\r\n");
                 else sprintf(client.sentence, "RETR %s\r\n", client.info);
                 SendMessage(client.sentence, client.conn_fd);
+                CloseAllfd();
+                client.data_fd = ConnectOutsider(client.conn_ip, client.data_port);
                 if (ReceiveMessage(client.sentence, client.conn_fd) <= 0)return -1;
                 printf("%s", client.sentence);
                 if (!CheckStart(client.sentence, "150")) {
+                    CloseAllfd();
                     return client.flag = 1;
                 }
-                CloseAllfd();
-                client.data_fd = ConnectOutsider(client.conn_ip, client.data_port);
             }
         }
         else {
@@ -525,13 +538,13 @@ int CheckRETR(){
             if(client.info[0] == '\0')strcpy(client.sentence, "RETR\r\n");
             else sprintf(client.sentence, "RETR %s\r\n", client.info);
             SendMessage(client.sentence, client.conn_fd);
+            client.data_fd = AccpetOutsider(client.listen_data_fd);
             if(ReceiveMessage(client.sentence, client.conn_fd)<=0)return -1;
             printf("%s", client.sentence);
             if(!CheckStart(client.sentence, "150")){
                 CloseAllfd();
                 return client.flag = 1;
             }
-            client.data_fd = AccpetOutsider(client.listen_data_fd);
         }
         if(client.data_fd < 0){
             CloseAllfd();
@@ -583,8 +596,10 @@ int CheckRETR(){
         if(ReceiveMessage(client.sentence, client.conn_fd)<=0)return -1;
         printf("%s", client.sentence);
         ed = clock();
-        double t = (double)(ed-st)/CLOCKS_PER_SEC;
-        if(CheckStart(client.sentence, ""))printf("transport time is %lfs and speed is %lfmb/s.\r\n", t, (double)byte_count/1000/1000/t);
+        if(!CheckStart(client.sentence, "226")){
+            double t = (double)(ed-st)/CLOCKS_PER_SEC;
+            printf("transport time is %lfs and speed is %lfmb/s.\r\n", t, (double)byte_count/1000/1000/t);
+        }
         return client.flag = 1;
     }
     return 0;
@@ -621,14 +636,15 @@ int CheckSTOR(){
                 if (client.info[0] == '\0')strcpy(client.sentence, "STOR\r\n");
                 else sprintf(client.sentence, "STOR %s\r\n", client.info);
                 SendMessage(client.sentence, client.conn_fd);
+                CloseAllfd();
+                client.data_fd = ConnectOutsider(client.conn_ip, client.data_port);
                 if (ReceiveMessage(client.sentence, client.conn_fd) <= 0)return -1;
                 printf("%s", client.sentence);
                 if (!CheckStart(client.sentence, "150")) {
+                    CloseAllfd();
                     fclose(fp);
                     return client.flag = 1;
                 }
-                CloseAllfd();
-                client.data_fd = ConnectOutsider(client.conn_ip, client.data_port);
             }
         }
         else {
@@ -645,6 +661,7 @@ int CheckSTOR(){
             if(client.info[0] == '\0')strcpy(client.sentence, "STOR\r\n");
             else sprintf(client.sentence, "STOR %s\r\n", client.info);
             SendMessage(client.sentence, client.conn_fd);
+            client.data_fd = AccpetOutsider(client.listen_data_fd);
             if(ReceiveMessage(client.sentence, client.conn_fd)<=0)return -1;
             printf("%s", client.sentence);
             if(!CheckStart(client.sentence, "150")){
@@ -652,7 +669,6 @@ int CheckSTOR(){
                 fclose(fp);
                 return client.flag = 1;
             }
-            client.data_fd = AccpetOutsider(client.listen_data_fd);
         }
         int byte_count = 0;
         if(client.data_fd < 0){
@@ -683,8 +699,10 @@ int CheckSTOR(){
         if(ReceiveMessage(client.sentence, client.conn_fd)<=0)return -1;
         printf("%s", client.sentence);
         ed = clock();
-        double t = (double)(ed-st)/CLOCKS_PER_SEC;
-        if(CheckStart(client.sentence, ""))printf("transport time is %lfs and speed is %lfmb/s.\r\n", t, (double)byte_count/1000/1000/t);
+        if(!CheckStart(client.sentence, "226")){
+            double t = (double)(ed-st)/CLOCKS_PER_SEC;
+            printf("transport time is %lfs and speed is %lfmb/s.\r\n", t, (double)byte_count/1000/1000/t);
+        }
         return client.flag = 1;
     }
     return 0;
@@ -862,7 +880,7 @@ int CheckCLIST(){
                 printf("local:list error.\r\n");
             }
             else{
-                printf("local:list error.\r\n");
+                printf("local:list ok.\r\n");
             }
             client.flag = 1;
             return 1;
@@ -881,7 +899,7 @@ int Login(){
     do{//user
         printf("please input username:");
         GetInput(info);
-        sprintf(sentence, "USER %s", info);
+        sprintf(sentence, "USER %s\r\n", info);
         SendMessage(sentence, client.conn_fd);
         if(ReceiveMessage(sentence, client.conn_fd)<=0)return -1;
         printf("%s", sentence);
@@ -890,31 +908,23 @@ int Login(){
     do{//pass
         printf("please input password:");
         GetInput(info);
-        sprintf(sentence, "PASS %s", info);
+        sprintf(sentence, "PASS %s\r\n", info);
         SendMessage(sentence, client.conn_fd);
         if(ReceiveMessage(sentence, client.conn_fd)<=0)return -1;
         printf("%s", sentence);
         if(CheckStart(sentence, "230"))break;
     }while(1);
-    SendMessage("SYST", client.conn_fd);
+    SendMessage("SYST\r\n", client.conn_fd);
     if(ReceiveMessage(sentence, client.conn_fd)<=0)return -1;
     printf("%s", sentence);
-    SendMessage("TYPE I", client.conn_fd);
+    SendMessage("TYPE I\r\n", client.conn_fd);
     if(ReceiveMessage(sentence, client.conn_fd)<=0)return -1;
     printf("%s", sentence);
     return 0;
 }
 int main(int argc, char **argv) {
     Init();
-    if(argc > 2){
-        if(CheckIP(argv[1])){
-            strcpy(client.conn_ip, argv[1]);
-        }
-        else{
-            printf("unvalid ip\n");
-        }
-    }
-    if(argc > 3){
+    if(argc >= 3){
         int base = 0, len = strlen(argv[2]);
         for(int j = 0; j < len; j++){
             if(argv[2][j] > '9' || argv[2][j] < '0'){
@@ -924,15 +934,26 @@ int main(int argc, char **argv) {
             base = base * 10  + argv[2][j] - '0';
         }
         if(base > 0){
+            printf("port:%d\n", base);
             client.conn_port = base;
         }
         else{
             printf("unvalid port\n");
         }
     }
+    if(argc >= 2){
+        if(CheckIP(argv[1])){
+            printf("ip:%s\n", argv[1]);
+            strcpy(client.conn_ip, argv[1]);
+        }
+        else{
+            strcpy(client.conn_ip, DEFAULT_IP);
+            printf("unvalid ip\n");
+        }
+    }
     client.conn_fd = ConnectOutsider(client.conn_ip, client.conn_port);
     if(client.conn_fd < 0)return 0;
-    GetLocalIp(client.owner_ip);
+    GetLocalIp(client.conn_fd, client.owner_ip);
     if(Login() < 0)return 0;
     char sentence[MAXBUF];
     while (1){

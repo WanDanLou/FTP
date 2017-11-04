@@ -1,6 +1,6 @@
 main:server.o
 	gcc -o server server.o
-client.o:client.c
+server.o:server.c
 	gcc -c -Wall server.c
 clean:
-	rm *.o server
+	rm -f *.o server

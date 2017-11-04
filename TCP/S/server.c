@@ -145,14 +145,28 @@ int SwitchOrder(char *order){
     }
     return -1;
 }
+//
+void hideFilepath(char *filepath){
+    char tmp[MAXBUF];
+    int len1 = strlen(server.root_filepath);
+    int len2 = strlen(filepath);
+    if(len2 == len1){
+        strcpy(filepath, "/");
+    }
+    else{
+        strcpy(tmp, filepath+len1);
+        strcpy(filepath, tmp);
+    }
+}
 // -1 failed 0 ok
 int CheckFilepath(char *filepath){
     int len = strlen(server.root_filepath);
     if(len <= 0)return -1;
     char tmp1[MAXBUF], tmp2[MAXBUF];
     if(server.info[0] == '/') {
-        if(!strncmp(server.info, server.root_filepath, len))return 0;
-        else return -1;
+        sprintf(tmp1,"%s%s", server.root_filepath, filepath);
+        strcpy(filepath, tmp1);
+        return 0;
     }
     while (1){
         Split(server.info, tmp1, tmp2, '/');
@@ -181,6 +195,73 @@ int CheckFilepath(char *filepath){
 
 void SetPort(int *old_port, int new_port){
     *old_port = new_port;
+}
+
+//-1 failed listenfd ok
+int ListenPort(int port){
+    int listen_fd;
+    struct sockaddr_in addr;
+    if ((listen_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) == -1) {
+        printf("Error socket(): %s(%d)\n", strerror(errno), errno);
+        return -1;
+    }
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+    if (bind(listen_fd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
+        printf("Error bind(): %s(%d)\n", strerror(errno), errno);
+        return -1;
+    }
+
+    if (listen(listen_fd, 10) == -1) {
+        printf("Error listen(): %s(%d)\n", strerror(errno), errno);
+        return -1;
+    }
+    return listen_fd;
+}
+//-1 failed conn_fd ok
+int AccpetOutsider(int listenfd){//-1 failed connect_fd ok
+    int conn_fd;
+    if ((conn_fd = accept(listenfd, NULL, NULL)) == -1) {
+        printf("Error accept(): %s(%d)\n", strerror(errno), errno);
+        return -1;
+    }
+    return conn_fd;
+}
+//-1 failed conn_fd ok
+int ConnectOutsider(char *ip, int port){
+    int conn_fd;
+    struct sockaddr_in addr;
+    if ((conn_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) == -1) {
+        printf("Error socket(): %s(%d)\n", strerror(errno), errno);
+        return -1;
+    }
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    if (inet_pton(AF_INET, ip, &addr.sin_addr) <= 0) {
+        printf("Error inet_pton(): %s(%d)\n", strerror(errno), errno);
+        return -1;
+    }
+    if (connect(conn_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        printf("Error connect(): %s(%d)\n", strerror(errno), errno);
+        return -1;
+    }
+    return conn_fd;
+}
+
+void SendMessage(char *message, int fd){
+    int len = strlen(message);
+    send(fd, message, len, 0);
+    //printf(message);
+}
+//return len
+int  ReceiveMessage(char *message, int fd){
+    int len = recv(fd, message, MAXBUF, 0);
+    message[len] = '\0';
+    return len;
 }
 // -1 failed 0 ok
 int Dele(char *file_name){
@@ -268,7 +349,7 @@ void ListFile(struct stat *buf, char *file_name, char *ansline) {
 }
 // -1 failed 0 ok
 int List(char *file_name, char *ans){
-    char tmp[MAXBUF], ansline[MAXBUF];
+    char tmp[MAXBUF];
     int flag = 0;
     struct stat buf;
     struct dirent* fp;
@@ -280,21 +361,21 @@ int List(char *file_name, char *ans){
         }
         strcpy(tmp, file_name+flag+1);
         ListFile(&buf, tmp, ans);
+        SendMessage(ans, server.data_fd);
         return 0;
     }
     else if(S_ISDIR(buf.st_mode)){
         ans[0] = '\0';
         dirfd = opendir(file_name);
+        if(dirfd == NULL)return -1;
         while((fp = readdir(dirfd)) != NULL){
             if(!strcmp(fp -> d_name, "."))continue;
             if(!strcmp(fp -> d_name, ".."))continue;
             sprintf(tmp, "%s/%s", file_name, fp->d_name);
             if(stat(tmp, &buf) < -1)return -1;
-            ListFile(&buf, fp->d_name, ansline);
-            strcat(ans, ansline);
-        }
-        if(ans[0] == '\0'){
-            strcpy(ans, "There is nothing in dir\r\n");
+            ListFile(&buf, fp->d_name, ans);
+            SendMessage(ans, server.data_fd);
+            //strcat(ans, ansline);
         }
         closedir(dirfd);
         return 0;
@@ -349,77 +430,12 @@ int Pasv(char *ans){
         else tmp[i] = server.owner_ip[i];
     }
     tmp[len] = '\0';
-    sprintf(ans, "227 =%s,%d,%d\r\n", tmp, server.data_port/256, server.data_port%256);
+    sprintf(ans, "227 Entering Passive Mode (%s,%d,%d)\r\n", tmp, server.data_port/256, server.data_port%256);
     //printf("%s\n", ans);
     return 0;
 }
-//-1 failed listenfd ok
-int ListenPort(int port){
-    int listen_fd;
-    struct sockaddr_in addr;
-    if ((listen_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) == -1) {
-        printf("Error socket(): %s(%d)\n", strerror(errno), errno);
-        return -1;
-    }
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
-
-    if (bind(listen_fd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
-        printf("Error bind(): %s(%d)\n", strerror(errno), errno);
-        return -1;
-    }
-
-    if (listen(listen_fd, 10) == -1) {
-        printf("Error listen(): %s(%d)\n", strerror(errno), errno);
-        return -1;
-    }
-    return listen_fd;
-}
-//-1 failed conn_fd ok
-int AccpetOutsider(int listenfd){//-1 failed connect_fd ok
-    int conn_fd;
-    if ((conn_fd = accept(listenfd, NULL, NULL)) == -1) {
-        printf("Error accept(): %s(%d)\n", strerror(errno), errno);
-        return -1;
-    }
-    return conn_fd;
-}
-//-1 failed conn_fd ok
-int ConnectOutsider(char *ip, int port){
-    int conn_fd;
-    struct sockaddr_in addr;
-    if ((conn_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) == -1) {
-        printf("Error socket(): %s(%d)\n", strerror(errno), errno);
-        return -1;
-    }
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    if (inet_pton(AF_INET, ip, &addr.sin_addr) <= 0) {
-        printf("Error inet_pton(): %s(%d)\n", strerror(errno), errno);
-        return -1;
-    }
-    if (connect(conn_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        printf("Error connect(): %s(%d)\n", strerror(errno), errno);
-        return -1;
-    }
-    return conn_fd;
-}
-
-void SendMessage(char *message, int fd){
-    int len = strlen(message);
-    send(fd, message, len, 0);
-    //printf(message);
-}
-//return len
-int  ReceiveMessage(char *message, int fd){
-    int len = recv(fd, message, MAXBUF, 0);
-    message[len] = '\0';
-    return len;
-}
 // -1 failed 0 ok
+
 int InputABOR(){
     char sentence[MAXBUF];
     sprintf(sentence, "221-You have transferred %d bytes in %d files.\r\n\
@@ -457,7 +473,6 @@ int InputLIST(){
         SendMessage("425 no TCP connection was established.\r\n", server.conn_fd);
         return -1;
     }
-    SendMessage("150 ready for data connection.\r\n", server.conn_fd);
     if(server.mode == PORTMODE){
         close(server.data_fd);
         server.data_fd = ConnectOutsider(server.conn_ip, server.data_port);
@@ -476,16 +491,17 @@ int InputLIST(){
             return -1;
         }
     }
+    SendMessage("150 ready for data connection.\r\n", server.conn_fd);
     server.data_flag = 1;
     char sentence[MAXBUF];
     if(server.info[0] != '\0'){
         //if(server.info[0] != '/')sprintf(sentence, "%s/%s", server.now_filepath, server.info);
         if(CheckFilepath(server.info)<0 || List(server.info, sentence) < 0){
-            SendMessage("451 list error\r\n", server.conn_fd);
             if(server.mode == PASVMODE)close(server.listen_data_fd);
             close(server.data_fd);
             server.listen_data_fd = -1;
             server.data_fd = -1;
+            SendMessage("451 list error\r\n", server.conn_fd);
             server.mode = NOMODE;
             server.data_flag = 0;
             return -1;
@@ -493,23 +509,23 @@ int InputLIST(){
     }
     else{
         if(List(server.now_filepath, sentence) < 0){
-            SendMessage("451 list error\r\n", server.conn_fd);
-            if(server.mode == PASVMODE)close(server.listen_data_fd);
-            close(server.data_fd);
             server.listen_data_fd = -1;
             server.data_fd = -1;
+            if(server.mode == PASVMODE)close(server.listen_data_fd);
+            close(server.data_fd);
+            SendMessage("451 list error\r\n", server.conn_fd);
             server.mode = NOMODE;
             server.data_flag = 0;
             return -1;
         }
     }
     //printf("%s\n", sentence);
-    SendMessage(sentence, server.data_fd);
-    SendMessage("226 list ok\r\n", server.conn_fd);
+    //SendMessage(sentence, server.data_fd);
     if(server.mode == PASVMODE)close(server.listen_data_fd);
     close(server.data_fd);
     server.listen_data_fd = -1;
     server.data_fd = -1;
+    SendMessage("226 list ok\r\n", server.conn_fd);
     server.data_flag = 0;
     server.mode = NOMODE;
     return 0;
@@ -545,7 +561,7 @@ int InputPASS(){
             SendMessage("230-\r\n\
 230-Welcome to\r\n\
 230-School of Software\r\n\
-230-FTP Archives at ftp.ssast.org\r\n\
+230-FTP Archives at anonymous ftp\r\n\
 230-\r\n\
 230-This site is provided as a public service by School of\r\n\
 230-Software. Use in violation of any applicable laws is strictly\r\n\
@@ -588,7 +604,9 @@ int InputPORT(){
 int InputPWD(){
     char sentence[MAXBUF];
     if(server.info[0] == '\0'){
+        hideFilepath(server.now_filepath);
         sprintf(sentence, "257 \"%s\"\r\n", server.now_filepath);
+        getcwd(server.now_filepath, MAXBUF);
         SendMessage(sentence, server.conn_fd);
         return 0;
     }
@@ -607,30 +625,17 @@ int InputQUIT(){
 }
 int InputRETR(){
     struct stat buf;
-    FILE *fp = fopen(server.info, "r");
-    if(fp == NULL){
-        SendMessage("550 file not exist.\r\n", server.conn_fd);
-        return -1;
-    }
-    if(CheckFilepath(server.info) < 0 ||stat(server.info, &buf) < -1 || S_ISDIR(buf.st_mode)){
-        SendMessage("550 can't retreive file/dir.\r\n", server.conn_fd);
-        fclose(fp);
-        return -1;
-    }
     if(server.mode == NOMODE) {
         SendMessage("425 no TCP connection was established.\r\n", server.conn_fd);
-        fclose(fp);
         return -1;
     }
-    SendMessage("150 ready for data connection.\r\n", server.conn_fd);
-    if(server.mode == PASVMODE) {
+    else if(server.mode == PASVMODE) {
         close(server.data_fd);
         server.data_fd = AccpetOutsider(server.listen_data_fd);
         if(server.data_fd < 0){
             SendMessage("425 no TCP connection was established.\r\n", server.conn_fd);
             close(server.listen_data_fd);
             server.listen_data_fd = -1;
-            fclose(fp);
             return -1;
         }
     }
@@ -639,9 +644,27 @@ int InputRETR(){
         server.data_fd = ConnectOutsider(server.conn_ip, server.data_port);
         if(server.data_fd < 0){
             SendMessage("425 no TCP connection was established.\r\n", server.conn_fd);
-            fclose(fp);
             return -1;
         }
+    }
+    SendMessage("150 ready for data connection.\r\n", server.conn_fd);
+    FILE *fp = fopen(server.info, "r");
+    if(fp == NULL){
+        if(server.mode == PASVMODE)close(server.listen_data_fd);
+        close(server.data_fd);
+        server.listen_data_fd = -1;
+        server.data_fd = -1;
+        SendMessage("550 file not exist.\r\n", server.conn_fd);
+        return -1;
+    }
+    if(CheckFilepath(server.info) < 0 ||stat(server.info, &buf) < -1 || S_ISDIR(buf.st_mode)){
+        if(server.mode == PASVMODE)close(server.listen_data_fd);
+        close(server.data_fd);
+        server.listen_data_fd = -1;
+        server.data_fd = -1;
+        SendMessage("550 can't retreive file/dir.\r\n", server.conn_fd);
+        fclose(fp);
+        return -1;
     }
     char file_buffer[MAXBUF];
     int len_buffer = MAXBUF;
@@ -652,13 +675,13 @@ int InputRETR(){
     while((file_buffer_len = fread(file_buffer, sizeof(char), MAXBUF, fp))>0){
         //printf("%d\n", file_buffer_len);
         if(send(server.data_fd, file_buffer, file_buffer_len, 0)<0){
-            SendMessage("426 send file broken\r\n", server.conn_fd);
-            printf("Error send\n");
-            fclose(fp);
             if(server.mode == PASVMODE)close(server.listen_data_fd);
             close(server.data_fd);
             server.listen_data_fd = -1;
             server.data_fd = -1;
+            SendMessage("426 send file broken\r\n", server.conn_fd);
+            printf("Error send\n");
+            fclose(fp);
             server.data_flag = 0;
             server.mode = NOMODE;
             return -1;
@@ -668,10 +691,10 @@ int InputRETR(){
     }
     fclose(fp);
     if(server.mode == PASVMODE)close(server.listen_data_fd);
-    SendMessage("226 retreive ok.\r\n", server.conn_fd);
     close(server.data_fd);
     server.listen_data_fd = -1;
     server.data_fd = -1;
+    SendMessage("226 retreive ok.\r\n", server.conn_fd);
     server.data_flag = 0;
     server.time_num++;
     server.time_byte += byte_count;
@@ -723,16 +746,10 @@ int InputRNTO(){
     }
 }
 int InputSTOR(){
-    FILE *fp = fopen(server.info, "w");
-    if(fp == NULL){
-        SendMessage("452 can not write in.\r\n", server.conn_fd);
-        return -1;
-    }
     if(server.mode == NOMODE) {
         SendMessage("425 no TCP connection was established.\r\n", server.conn_fd);
         return -1;
     }
-    SendMessage("150 ready for data connection.\r\n", server.conn_fd);
     if(server.mode == PASVMODE) {
         close(server.data_fd);
         server.data_fd = AccpetOutsider(server.listen_data_fd);
@@ -751,6 +768,16 @@ int InputSTOR(){
             return -1;
         }
     }
+    SendMessage("150 ready for data connection.\r\n", server.conn_fd);
+    FILE *fp = fopen(server.info, "w");
+    if(fp == NULL){
+        if(server.mode == PASVMODE)close(server.listen_data_fd);
+        close(server.data_fd);
+        server.listen_data_fd = -1;
+        server.data_fd = -1;
+        SendMessage("452 can not write in.\r\n", server.conn_fd);
+        return -1;
+    }
     char file_buffer[MAXBUF];
     int len_buffer = MAXBUF;
     int byte_count = 0;
@@ -760,28 +787,28 @@ int InputSTOR(){
         file_buffer_len = recv(server.data_fd, file_buffer, MAXBUF, 0);
         if(file_buffer_len == 0)break;
         if(file_buffer_len<0){
-            SendMessage("426 receive file broken\r\n", server.conn_fd);
-            printf("Error recv\n");
-            fclose(fp);
-            remove(server.info);
             if(server.mode == PASVMODE)close(server.listen_data_fd);
             close(server.data_fd);
             server.listen_data_fd = -1;
             server.data_fd = -1;
+            SendMessage("426 receive file broken\r\n", server.conn_fd);
+            printf("Error recv\n");
+            fclose(fp);
+            remove(server.info);
             server.data_flag = 0;
             server.mode = NOMODE;
             return -1;
         }
         len_buffer = fwrite(file_buffer, sizeof(char), file_buffer_len, fp);
         if(len_buffer < file_buffer_len) {
-            SendMessage("451 write file error.\r\n", server.conn_fd);
-            printf("Error fwrite\n");
-            fclose(fp);
-            remove(server.info);
             if(server.mode == PASVMODE)close(server.listen_data_fd);
             close(server.data_fd);
             server.listen_data_fd = -1;
             server.data_fd = -1;
+            SendMessage("451 write file error.\r\n", server.conn_fd);
+            printf("Error fwrite\n");
+            fclose(fp);
+            remove(server.info);
             server.data_flag = 0;
             server.mode = NOMODE;
             return -1;
@@ -790,11 +817,11 @@ int InputSTOR(){
         bzero(file_buffer, MAXBUF);
     }
     fclose(fp);
-    SendMessage("226 storage ok.\r\n", server.conn_fd);
     if(server.mode == PASVMODE)close(server.listen_data_fd);
     close(server.data_fd);
     server.listen_data_fd = -1;
     server.data_fd = -1;
+    SendMessage("226 storage ok.\r\n", server.conn_fd);
     server.data_flag = 0;
     server.mode = NOMODE;
     server.time_num++;
@@ -955,7 +982,7 @@ int main(int argc, char **argv){
         }
         else if(!strcmp("-root", argv[i])){
             i++;
-            if(chdir(argv[i]) == 0){
+            if(!chdir(argv[i])){
                 getcwd(server.root_filepath, 200);
                 getcwd(server.now_filepath, 200);
                 root_flag = 1;
@@ -963,7 +990,7 @@ int main(int argc, char **argv){
         }
     }
     if(!root_flag){
-        //chdir("/tmp");
+        chdir("/tmp");
         getcwd(server.root_filepath, 200);
         getcwd(server.now_filepath, 200);
     }
@@ -974,7 +1001,7 @@ int main(int argc, char **argv){
         //int *conn_fd = malloc(sizeof(int *));
         //*conn_fd = AccpetOutsider(server.listen_conn_fd);
         //if(*conn_fd < 0)break;
-        ///pthread_t pid;
+        //pthread_t pid;
         //pthread_create(&pid, NULL, FtpStart, (void *)conn_fd);
         int conn_fd = AccpetOutsider(server.listen_conn_fd);
         pid_t pid = -1;
@@ -989,7 +1016,7 @@ int main(int argc, char **argv){
         else{
             close(server.conn_fd);
         }
-//        FtpStart(conn_fd);
+       //FtpStart(conn_fd);
     }
     printf("end\n");
     close(server.listen_conn_fd);
